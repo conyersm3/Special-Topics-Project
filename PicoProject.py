@@ -1,124 +1,141 @@
-from machine import Pin, SPI, PWM
-from nrf24l01 import NRF24L01
+# Combined Code for Transmitter Pico W (transmitter side)
+
+import time
+import network
+import socket
 import ucryptolib
-from time import sleep
-import struct
+import random
+from machine import Pin, PWM, I2C
+from mfrc522 import SimpleMFRC522
 
-# Setup NRF24L01 for communication
-csn_pin = Pin(15, mode=Pin.OUT, value=1)
-ce_pin = Pin(14, mode=Pin.OUT, value=0)
-spi_nrf = SPI(1, baudrate=1000000, polarity=0, phase=0, sck=Pin(10), mosi=Pin(11), miso=Pin(12))
-nrf = NRF24L01(spi_nrf, csn_pin, ce_pin, payload_size=32)
+# Wi-Fi credentials
+SSID = "MyOptimum ba9973"
+PASSWORD = "brick-762-400"  # Replace with your actual Wi-Fi password
+RECEIVER_IP = "192.168.1.193"  # Replace with the actual receiver IP
+PORT = 12345
 
-# NRF24L01 recieve
-role = "receive"
+# AES encryption key (128-bit)
+AES_KEY = b"thisis128bitkey!"
 
-if role == "send":
-    send_pipe = b"\xe1\xf0\xf0\xf0\xf0"
-    receive_pipe = b"\xd2\xf0\xf0\xf0\xf0"
-else:
-    send_pipe = b"\xd2\xf0\xf0\xf0\xf0"
-    receive_pipe = b"\xe1\xf0\xf0\xf0\xf0"
+# GPIO setup for RGB LED
+led_red = Pin(15, Pin.OUT)
+led_green = Pin(16, Pin.OUT)
+led_blue = Pin(17, Pin.OUT)
 
-def setup():
-    print("Initialising the nRF24L0+ Module")
-    nrf = NRF24L01(SPI(0), csn, ce, payload_size=payload_size)
-    nrf.open_tx_pipe(send_pipe)
-    nrf.open_rx_pipe(1, receive_pipe)
-    nrf.start_listening()
-    return nrf
+# Initialize the SimpleMFRC522 reader with custom pins
+rfid_reader = SimpleMFRC522(sck=2, mosi=3, miso=4, cs=1, rst=0)
 
-def flash_led(times:int=None):
-    ''' Flashed the built in LED the number of times defined in the times parameter '''
-    for _ in range(times):
-        led.value(1)
-        sleep(0.01)
-        led.value(0)
-        sleep(0.01)
+# Keypad configuration
+row_pins = [Pin(12, Pin.OUT), Pin(11, Pin.OUT), Pin(10, Pin.OUT), Pin(9, Pin.OUT)]
+col_pins = [Pin(8, Pin.IN, Pin.PULL_DOWN), Pin(7, Pin.IN, Pin.PULL_DOWN), Pin(6, Pin.IN, Pin.PULL_DOWN), Pin(5, Pin.IN, Pin.PULL_DOWN)]
+keys = [
+    ["1", "2", "3", "A"],
+    ["4", "5", "6", "B"],
+    ["7", "8", "9", "C"],
+    ["*", "0", "#", "D"]
+]
 
-def send(nrf, msg):
-    print("sending message.", msg)
-    nrf.stop_listening()
-    for n in range(len(msg)):
-        try:
-            encoded_string = msg[n].encode()
-            byte_array = bytearray(encoded_string)
-            buf = struct.pack("s", byte_array)
-            nrf.send(buf)
-            # print(role,"message",msg[n],"sent")
-            flash_led(1)
-        except OSError:
-            print(role,"Sorry message not sent")
-    nrf.send("\n")
-    nrf.start_listening()
+# Function to connect to Wi-Fi
+def connect_to_wifi():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.connect(SSID, PASSWORD)
+    print("Connecting to Wi-Fi...")
+    while not wlan.isconnected():
+        time.sleep(1)
+    print("Connected to Wi-Fi!")
+    print("IP Address:", wlan.ifconfig()[0])
 
-# main code loop
-flash_led(1)
-nrf = setup()
-nrf.start_listening()
-msg_string = ""
+# Function to set RGB LED color
+def set_rgb_color(red, green, blue):
+    led_red.value(red)
+    led_green.value(green)
+    led_blue.value(blue)
 
-while True:
-    msg = ""
-    if role == "send":
-        send(nrf, "Yello world")
-        send(nrf, "Test")
-    else:
-        # Check for Messages
-        if nrf.any():
-            package = nrf.recv()          
-            message = struct.unpack("s",package)
-            msg = message[0].decode()
-            flash_led(1)
+# Function to pad messages to be multiples of 16 bytes
+def pad_message(message):
+    message_bytes = message.encode('utf-8')
+    padding_length = 16 - (len(message_bytes) % 16)
+    return message_bytes + b" " * padding_length
 
-            # Check for the new line character
-            if (msg == "\n") and (len(msg_string) <= 20):
-                print("full message",msg_string, msg)
-                msg_string = ""
-            else:
-                if len(msg_string) <= 20:
-                    msg_string = msg_string + msg
+# Function to encrypt a message
+def encrypt_message(message):
+    padded_message = pad_message(message)
+    cipher = ucryptolib.aes(AES_KEY, 1)  # 1 represents ECB mode
+    encrypted = cipher.encrypt(padded_message)
+    return encrypted
+
+# Function to get user input from the keypad
+def get_pin_from_keypad():
+    pin = ""
+    print("Enter the 4-digit PIN followed by #: ")
+    while True:
+        for row_index, row in enumerate(row_pins):
+            row.on()
+            for col_index, col in enumerate(col_pins):
+                if col.value():
+                    key = keys[row_index][col_index]
+                    print(f"Key pressed: {key}")
+                    if key == "#":
+                        row.off()
+                        return pin
+                    elif key.isdigit() and len(pin) < 4:
+                        pin += key
+                        print(f"Current PIN: {pin}")
+                    time.sleep(0.3)  # Debounce delay
+            row.off()
+
+# Main function
+def main():
+    connect_to_wifi()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    
+    try:
+        sock.connect((RECEIVER_IP, PORT))
+        set_rgb_color(0, 0, 1)  # Blue LED for waiting on RFID
+        print("Place RFID card near the reader...")
+        
+        while True:
+            try:
+                id, text = rfid_reader.read()
+                print(f"RFID ID: {id}, Text: {text}")
+                set_rgb_color(0, 1, 0)  # Green LED for verified RFID
+
+                # Encrypt and send a message
+                message = f"RFID_OK: {id}"
+                encrypted_msg = encrypt_message(message)
+                sock.send(encrypted_msg)
+                print("Sent encrypted message to receiver")
+                
+                # Receive the PIN from the receiver
+                pin = sock.recv(1024).decode()
+                print(f"Received PIN: {pin}")
+                
+                # Prompt user to enter the PIN on the keypad
+                entered_pin = get_pin_from_keypad()
+                print(f"Entered PIN: {entered_pin}")
+                
+                if entered_pin == pin:
+                    print("PIN is correct!")
+                    sock.send("Good-to-Go".encode())
                 else:
-                    msg_string = ""
+                    print("Incorrect PIN!")
+                    sock.send("Access Denied".encode())
+                
+                time.sleep(5)
 
-# AES Decryption setup (128-bit key)
-key = b'16_byte_secret!'  # Same key as transmitter
-iv = b'16_byte_iv_init'   # Same IV as transmitter
-cipher = ucryptolib.aes(key, ucryptolib.MODE_CBC, iv)
+            except Exception as e:
+                print(f"Error reading RFID: {e}")
+                set_rgb_color(1, 0, 0)  # Red LED for error
+                time.sleep(5)
+    
+    except Exception as e:
+        print(f"Connection error: {e}")
+    
+    finally:
+        sock.close()
+        print("Socket closed")
 
-# Servo motor setup (for GPS data)
-servo_pin = PWM(Pin(0))
-servo_pin.freq(50)
+if __name__ == "__main__":
+    main()
 
-# Buzzer setup
-buzzer = Pin(2, Pin.OUT)
-
-# Decrypt received data
-def decrypt_data(encrypted_data):
-    return cipher.decrypt(encrypted_data).strip(b'\x00')
-
-# Function to control servo motor based on decrypted GPS data
-def control_servo(gps_data):
-    position = int(gps_data) % 180  # Example: convert GPS data to servo position
-    duty = int((position / 180) * 1023)
-    servo_pin.duty(duty)
-
-# Self-destruct function (wipes encryption keys and data)
-def self_destruct():
-    print("Self-destruct sequence initiated!")
-    buzzer.on()
-    cipher = None  # Wipe key and cipher
-    # Additional cleanup actions here
-
-# Main Receiver loop
-#while True:
-#    if nrf.any():
-#        encrypted_data = nrf.recv()
-#        decrypted_data = decrypt_data(encrypted_data)
-#        print("Decrypted data:", decrypted_data)
-        
-        # Example logic for self-destruct (if unauthorized access detected)
-#        if decrypted_data == b"Unauthorized":
-#            self_destruct()
-        
-#        control_servo(decrypted_data)  # Use decrypted data for servo control
