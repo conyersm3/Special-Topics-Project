@@ -9,9 +9,9 @@ from machine import Pin, PWM, I2C
 from mfrc522 import SimpleMFRC522
 
 # Wi-Fi credentials
-SSID = "MyOptimum ba9973"
-PASSWORD = "brick-762-400"  # Replace with your actual Wi-Fi password
-RECEIVER_IP = "192.168.1.193"  # Replace with the actual receiver IP
+SSID = " " # Replace with your actual SSID
+PASSWORD = " "  # Replace with your actual Wi-Fi password
+RECEIVER_IP = " "  # Replace with the actual receiver IP
 PORT = 12345
 
 # AES encryption key (128-bit)
